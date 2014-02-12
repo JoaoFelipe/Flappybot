@@ -6,6 +6,8 @@ import pygame
 import cv2
 import operator
 from numpy import *
+import win32gui
+import win32ui 
 # Globals
 X_PAD = 1060
 Y_PAD = 309
@@ -36,6 +38,32 @@ BLUE = pygame.Color("blue")
 GREEN = pygame.Color("green")
 RED = pygame.Color("red")
 BLACK = pygame.Color("black")
+
+def grab2(box=None):
+    if not box:
+        box = (X_PAD+1, Y_PAD+1, X_PAD+WIDTH, Y_PAD+HEIGHT)
+    w, h = box[2] - box[0], box[3] - box[1]
+    hwnd = win32gui.GetDesktopWindow()
+    #print hwnd
+    wDC = win32gui.GetWindowDC(hwnd)
+    dcObj=win32ui.CreateDCFromHandle(wDC)
+    cDC=dcObj.CreateCompatibleDC()
+    dataBitMap = win32ui.CreateBitmap()
+    dataBitMap.CreateCompatibleBitmap(dcObj, w, h)
+    cDC.SelectObject(dataBitMap)
+    cDC.BitBlt((0,0),(w, h) , dcObj, (box[0], box[1]), win32con.SRCCOPY)
+    #import pdb; pdb.set_trace()
+    bmpinfo = dataBitMap.GetInfo()
+    bmpstr = dataBitMap.GetBitmapBits(True)
+    im = Image.frombuffer(
+        'RGB',
+        (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
+        bmpstr, 'raw', 'BGRX', 0, 1)
+    #dataBitMap.SaveBitmapFile(cDC, os.getcwd() + '\\plot_snap__' + str(int(time.time())) + '.bmp')
+    dcObj.DeleteDC()
+    cDC.DeleteDC()
+    win32gui.ReleaseDC(hwnd, wDC)
+    return im
 
 def plot(arr):
     Image.fromarray(uint8(arr)).save(os.getcwd() + '\\plot_snap__' + str(int(time.time())) + '.png', 'PNG')
@@ -142,14 +170,107 @@ def draw_game(screen, bird, pipes):
     
     pygame.draw.line(screen, RED, (0, FLOOR_Y), (WIDTH - 1, FLOOR_Y))
  
+class Player(object):
 
-def game_logic(screen, dt):
-    im = screen_grab(box=PLAYABLE_BOX)
+    def __init__(self):
+        self.initialize()
+
+    def initialize(self):
+        self.last_x, self.x = 0, 0
+        self.last_y, self.y = 0, 0
+        self.last_speed_x, self.last_speed_y = 0.0, 0.0
+        self.speed_x, self.speed_y = 0.0, 0.0
+        self.accel_x, self.accel_y = 0.0, 0.0
+        self.pipes = 0
+        self.bird = None
+        self.dt = 1.0
+        self.ys = []
+        self.ts = []
+        self.clicks = []
+
+
+    def see(self, dt, bird, pipes):
+        if bird:
+            self.last_x, self.x = self.x, bird[0] + (bird[2] / 2)
+            self.last_y, self.y = self.y, bird[1] + (bird[3] / 2)
+            self.last_speed_x, self.speed_x = self.speed_x, (self.x - self.last_x) / dt
+            self.last_speed_y, self.speed_y = self.speed_y, (self.y - self.last_y) / dt
+            self.accel_x = (self.speed_x - self.last_speed_x) / dt
+            self.accel_y = (self.speed_y - self.last_speed_y) / dt
+
+        self.ys.append(self.last_y)
+        self.ts.append(time.time())
+
+
+        self.pipes = pipes
+        self.bird = bird
+        self.dt = dt
+
+
+    def play(self):
+        if not self.pipes and self.y > (FLOOR_Y - FLOOR_SECURITY):
+            self.fly()
+            self.clicks.append(time.time())
+            #self.accels_x.append('Click')
+            #self.accels_y.append('Click')
+
+
+    def fly(self):
+        left_click()
+
+class PIDPlayer(Player):
+    
+    def __init__(self):
+        super(PIDPlayer, self).__init__()
+    
+
+SPEED_X = 171.42857142857142857142857142857  
+ACCEL_Y = 3600.0
+
+HIGHEST = []
+
+def trace_line(screen, player, traces=[]):
+    global HIGHEST
+    y0 = player.y
+    x0 = player.x
+    y = y0
+    x = x0
+    v0y = player.speed_y
+    t = 0;
+    dt = 1.0 / SPEED_X
+    t0 = time.time() 
+    trace = [(x, y, t0)]
+    
+    while y < FLOOR_Y:
+        t += dt
+        ny = y0 + (v0y * t) + (ACCEL_Y * t * t / 2.0)
+        nx = x0 + SPEED_X * t
+        pygame.draw.line(screen, RED, (x, y), (nx, ny))
+        x, y = nx, ny
+        trace.append((x, y, t0+t))
+    traces.append(trace)
+    for high in HIGHEST:
+        if high[2] >= t0:
+            pygame.draw.line(screen, WHITE, (1, high[1]), (WIDTH-1, high[1]))
+    HIGHEST.append(min(trace, key=lambda x: x[1]))
+
+
+TRACES=[]
+
+def game_logic(screen, dt, player):
+    global TRACES
+    im = grab2(box=PLAYABLE_BOX)
+    #return True
+    
+    #im = screen_grab(box=PLAYABLE_BOX)
     im_gray = ImageOps.grayscale(im)
     
     coords = get_cords()
     if coords[0] < 0 or coords[1] < 0:
         print "Mouse out"
+        for i, v in enumerate(player.ys):
+            print '%i\t%s'%(v, str(player.ts[i]))
+        print player.clicks
         return False
     
     if im.getpixel(END_GAME_OK) == (232, 97, 1):
@@ -158,15 +279,33 @@ def game_logic(screen, dt):
         return True
     
 
+
     diff_array = asarray(ImageChops.difference(im_gray,BACKGROUND_GRAY))
     #grayscale_array_to_pygame(screen, diff_array)
 
     bird, pipes = find_elements(diff_array)
     draw_game(screen, bird, pipes)
+    player.see(dt, bird, pipes)
+    if player.pipes:
+        print str(player.pipes[0][0]) + '\t' + str(player.ts[-1]) + '\t' + str(dt) + '\t' + str((player.pipes[0][0] + (dt*SPEED_X)))
+    t0 = time.time()
+    traces = []
+    for trace in TRACES:
+        x0, y0 = None, None
+        n_trace = []
+        i, (x, y, t) = min(enumerate(trace), key=lambda x: abs(x[1][2]-t0))
+        pygame.draw.rect(screen, WHITE, [player.x - 3, y - 3, 6, 6])
+    TRACES = traces
+    trace_line(screen, player, TRACES)
+                
+    pygame.draw.rect(screen, BLUE, [player.x - 3, player.y - 3, 6, 6])
+    font = pygame.font.SysFont("monospace", 15)
+    label = font.render("%d %d"%(player.speed_y, player.accel_y), 1, (255,255,0))
+    screen.blit(label, (10, FLOOR_Y + 26))
+    #player.play()
     
+
     return True
-
-
 
 def game():
     pygame.init()
@@ -175,6 +314,12 @@ def game():
     running = True
     last_frame_time = 0
     font = pygame.font.SysFont("monospace", 15)
+    player = PIDPlayer()
+    for i in range(5):
+        left_click()
+        time.sleep(.1)
+    time.sleep(.16)  
+
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -183,7 +328,7 @@ def game():
         current_time = time.time()
         dt = current_time - last_frame_time
         last_frame_time = current_time
-        running = running and game_logic(screen, dt)
+        running = running and game_logic(screen, dt, player)
         label = font.render(str(dt), 1, (255,255,0))
         screen.blit(label, (10, FLOOR_Y + 10))
         pygame.display.flip()
