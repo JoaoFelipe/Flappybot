@@ -20,9 +20,10 @@ GET_READY = (245, 224)
 START_BUTTON = (147, 572)
 END_GAME_OK = (169, 502)
 FLOOR_Y = 616
-FLOOR_SECURITY = 200
+FLOOR_SECURITY = 80
 BIRD_X = 119
 BIRD_FRONT_X = 155
+DILATE_COLLISION = 10
 
 PLAYABLE_BOX = (X_PAD+1, Y_PAD+1, X_PAD+WIDTH, Y_PAD+FLOOR_Y)
 GAME_OVER_BOX = (X_PAD+55, Y_PAD+268, X_PAD+444, Y_PAD+461)
@@ -162,6 +163,7 @@ def find_elements(diff_array):
 def draw_game(screen, bird, pipes):
     if bird:
         pygame.draw.rect(screen, BLUE, bird, 2)
+        pygame.draw.rect(screen, WHITE, dilate_rect(bird, DILATE_COLLISION), 2 )
 
     for pipe in pipes:
         pygame.draw.rect(screen, GREEN, pipe, 2)
@@ -169,7 +171,20 @@ def draw_game(screen, bird, pipes):
         pygame.draw.rect(screen, RED, [pipe[0], pipe[1] + pipe[3], pipe[2], FLOOR_Y - pipe[1] - pipe[3]], 2)
     
     pygame.draw.line(screen, RED, (0, FLOOR_Y), (WIDTH - 1, FLOOR_Y))
- 
+    pygame.draw.line(screen, WHITE, (0, FLOOR_Y - FLOOR_SECURITY), (WIDTH - 1, FLOOR_Y - FLOOR_SECURITY))
+
+def rect_collision(rect1, rect2):
+    return not (
+        (rect1[0] > rect2[0] + rect2[2] - 1) or
+        (rect1[1] > rect2[1] + rect2[3] - 1) or
+        (rect2[0] > rect1[0] + rect1[2] - 1) or
+        (rect2[1] > rect1[1] + rect1[3] - 1)
+    )
+
+def dilate_rect(rect, d):
+    return (rect[0] - d, rect[1] - d, rect[2] + 2*d, rect[3] + 2*d)
+
+
 class Player(object):
 
     def __init__(self):
@@ -184,9 +199,6 @@ class Player(object):
         self.pipes = 0
         self.bird = None
         self.dt = 1.0
-        self.ys = []
-        self.ts = []
-        self.clicks = []
 
 
     def see(self, dt, bird, pipes):
@@ -198,21 +210,29 @@ class Player(object):
             self.accel_x = (self.speed_x - self.last_speed_x) / dt
             self.accel_y = (self.speed_y - self.last_speed_y) / dt
 
-        self.ys.append(self.last_y)
-        self.ts.append(time.time())
-
-
         self.pipes = pipes
         self.bird = bird
         self.dt = dt
 
 
+    def next_pipe(self):
+        for pipe in self.pipes:
+            if pipe[0] + pipe[2] > self.x:
+                return pipe
+        return None
+
     def play(self):
-        if not self.pipes and self.y > (FLOOR_Y - FLOOR_SECURITY):
+        bird = self.bird if self.bird else (self.x - 30, self.y - 30, 60, 60)
+        if self.y > (FLOOR_Y - FLOOR_SECURITY):
             self.fly()
-            self.clicks.append(time.time())
-            #self.accels_x.append('Click')
-            #self.accels_y.append('Click')
+        pipe = self.next_pipe()
+        if pipe:
+            if pipe[1] + pipe[3] < bird[1] + bird[3] - 5: #and self.speed_y >= 0:
+                self.fly()
+            if rect_collision([pipe[0], pipe[1] + pipe[3], pipe[2], FLOOR_Y - pipe[1] - pipe[3]], dilate_rect(bird, DILATE_COLLISION)):
+                self.fly()
+
+            
 
 
     def fly(self):
@@ -223,39 +243,6 @@ class PIDPlayer(Player):
     def __init__(self):
         super(PIDPlayer, self).__init__()
     
-
-SPEED_X = 171.42857142857142857142857142857  
-ACCEL_Y = 3600.0
-
-HIGHEST = []
-
-def trace_line(screen, player, traces=[]):
-    global HIGHEST
-    y0 = player.y
-    x0 = player.x
-    y = y0
-    x = x0
-    v0y = player.speed_y
-    t = 0;
-    dt = 1.0 / SPEED_X
-    t0 = time.time() 
-    trace = [(x, y, t0)]
-    
-    while y < FLOOR_Y:
-        t += dt
-        ny = y0 + (v0y * t) + (ACCEL_Y * t * t / 2.0)
-        nx = x0 + SPEED_X * t
-        pygame.draw.line(screen, RED, (x, y), (nx, ny))
-        x, y = nx, ny
-        trace.append((x, y, t0+t))
-    traces.append(trace)
-    for high in HIGHEST:
-        if high[2] >= t0:
-            pygame.draw.line(screen, WHITE, (1, high[1]), (WIDTH-1, high[1]))
-    HIGHEST.append(min(trace, key=lambda x: x[1]))
-
-
-TRACES=[]
 
 def game_logic(screen, dt, player):
     global TRACES
@@ -268,9 +255,6 @@ def game_logic(screen, dt, player):
     coords = get_cords()
     if coords[0] < 0 or coords[1] < 0:
         print "Mouse out"
-        for i, v in enumerate(player.ys):
-            print '%i\t%s'%(v, str(player.ts[i]))
-        print player.clicks
         return False
     
     if im.getpixel(END_GAME_OK) == (232, 97, 1):
@@ -286,23 +270,11 @@ def game_logic(screen, dt, player):
     bird, pipes = find_elements(diff_array)
     draw_game(screen, bird, pipes)
     player.see(dt, bird, pipes)
-    if player.pipes:
-        print str(player.pipes[0][0]) + '\t' + str(player.ts[-1]) + '\t' + str(dt) + '\t' + str((player.pipes[0][0] + (dt*SPEED_X)))
-    t0 = time.time()
-    traces = []
-    for trace in TRACES:
-        x0, y0 = None, None
-        n_trace = []
-        i, (x, y, t) = min(enumerate(trace), key=lambda x: abs(x[1][2]-t0))
-        pygame.draw.rect(screen, WHITE, [player.x - 3, y - 3, 6, 6])
-    TRACES = traces
-    trace_line(screen, player, TRACES)
-                
     pygame.draw.rect(screen, BLUE, [player.x - 3, player.y - 3, 6, 6])
     font = pygame.font.SysFont("monospace", 15)
     label = font.render("%d %d"%(player.speed_y, player.accel_y), 1, (255,255,0))
     screen.blit(label, (10, FLOOR_Y + 26))
-    #player.play()
+    player.play()
     
 
     return True
@@ -315,11 +287,6 @@ def game():
     last_frame_time = 0
     font = pygame.font.SysFont("monospace", 15)
     player = PIDPlayer()
-    for i in range(5):
-        left_click()
-        time.sleep(.1)
-    time.sleep(.16)  
-
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
